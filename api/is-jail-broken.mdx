@@ -1,0 +1,112 @@
+---
+title: "isJailBroken() — detect rooted and jailbroken devices"
+description: "Returns true when JailMonkey detects that an iOS or Android device is jailbroken or rooted, so you can restrict sensitive app functionality accordingly."
+---
+
+`isJailBroken()` is the primary security check in JailMonkey. It runs a battery of platform-specific heuristics and returns `true` the moment any indicator of jailbreak or root is detected. On iOS this means scanning for jailbreak artifacts in the filesystem, URL schemes, loaded dynamic libraries, sandbox integrity, and fork capability. On Android it delegates to the RootBeer library plus a JailMonkey-native binary check to cast a wide detection net.
+
+## Signature
+
+```typescript
+isJailBroken(): boolean
+```
+
+## Platform behavior
+
+<Tabs>
+  <Tab title="iOS">
+    The iOS implementation runs six independent checks. If **any** of them returns `true`, the method returns `true`.
+
+    | Check | What it looks for |
+    |---|---|
+    | **Path scan** | ~80 filesystem paths associated with Cydia, Sileo, electra, unc0ver, checkra1n, Frida, SSH daemons, and other jailbreak toolchains |
+    | **URL scheme scan** | Registered URL schemes: `cydia://`, `sileo://`, `zbra://`, `filza://`, `undecimus://`, `activator://`, and location-spoofer apps (AnyGo, GPS Manager, LocSim) |
+    | **Sandbox violation** | Attempts to write a test file to `/private/jailbreak.txt` outside the app sandbox |
+    | **Fork ability** | Calls `fork()`; stock iOS kills the process, jailbroken devices allow it |
+    | **Symlink scan** | Checks known symlink targets (`/Applications`, `/usr/include`, etc.) that jailbreaks redirect |
+    | **Dylib scan** | Iterates loaded images via `_dyld_image_count()` / `_dyld_get_image_name()` looking for names like `CydiaSubstrate`, `FridaGadget`, `Substitute`, `libhooker`, `Dopamine`'s `systemhook.dylib`, and ~25 others |
+
+    <Note>
+      On the iOS Simulator `isJailBroken()` always returns `false`. On a Mac Catalyst build (`isiOSAppOnMac == true`) it also returns `false`, because macOS paths would otherwise trigger false positives.
+    </Note>
+  </Tab>
+  <Tab title="Android">
+    Android detection combines two engines and returns `true` if either fires.
+
+    **RootBeer checks**
+
+    | Check | Description |
+    |---|---|
+    | `detectRootManagementApps` | Looks for known root-management app packages (SuperSU, Magisk Manager, etc.) |
+    | `detectPotentiallyDangerousApps` | Looks for packages used to exploit or circumvent security |
+    | `checkForSuBinary` | Searches common `PATH` locations for a `su` binary |
+    | `checkForDangerousProps` | Inspects system properties like `ro.debuggable` and `ro.secure` |
+    | `checkForRWPaths` | Checks whether normally read-only partitions are mounted read-write |
+    | `detectTestKeys` | Returns `true` when the build is signed with test keys instead of release keys |
+    | `checkSuExists` | Secondary `su` existence check via `which` / `ls` |
+    | `checkForRootNative` | Native binary check for root indicators |
+    | `checkForMagiskBinary` | Detects Magisk binaries by name |
+
+    **JailMonkey native check**
+
+    An additional API-version-aware binary check runs alongside RootBeer (API < 23 uses `LessThan23`, API ≥ 23 uses `GreaterThan23`).
+
+    <Note>
+      Returns `false` when the Android `Context` is `null` (for example, before the React Native bridge has fully initialised).
+    </Note>
+
+    <Tip>
+      For a breakdown of which individual checks fired, call `androidRootedDetectionMethods()`. This returns the full RootBeer result object plus the `jailMonkey` boolean, which is useful for diagnosing false positives on specific device models.
+    </Tip>
+  </Tab>
+</Tabs>
+
+## Return value
+
+<ResponseField name="result" type="boolean" required>
+  `true` if the device shows any sign of jailbreak (iOS) or root (Android). `false` on a stock device, on the iOS Simulator, on Mac Catalyst, or when the Android context is unavailable.
+</ResponseField>
+
+## Usage example
+
+```typescript
+import JailMonkey from 'jail-monkey';
+
+function checkDeviceSecurity() {
+  if (JailMonkey.isJailBroken()) {
+    // The device is compromised — restrict sensitive features,
+    // log a security event, or exit the sensitive flow entirely.
+    console.warn('Device is jailbroken or rooted.');
+    return;
+  }
+
+  // Safe to proceed with sensitive operations.
+}
+```
+
+### Bypassing the check in development
+
+```typescript
+import JailMonkey from 'jail-monkey';
+
+// __DEV__ is a global boolean set by React Native's Metro bundler
+const isCompromised = __DEV__ ? false : JailMonkey.isJailBroken();
+```
+
+<Warning>
+  Never use `__DEV__` as a bypass in production builds. Emulators and simulators are almost always rooted, so suppressing the check only during development prevents constant false alarms without affecting production security.
+</Warning>
+
+## Important notes
+
+<Note>
+  `isJailBroken()` is synchronous and safe to call on the main thread. It performs filesystem I/O and URL scheme queries on iOS, so avoid calling it inside tight render loops. Cache the result in component state or a module-level variable instead.
+</Note>
+
+<Warning>
+  No detection method is foolproof. Advanced jailbreaks (Dopamine with hide-jailbreak enabled, for example) actively patch many of these checks. Use `isJailBroken()` as one layer in a defence-in-depth strategy rather than as the sole security gate.
+</Warning>
+
+<Note>
+  If the package is not linked, any call to `isJailBroken()` will throw an explicit linking error rather than silently returning `false`. A silent `false` on an unlinked package could make a broken install appear as a passing security check.
+</Note>

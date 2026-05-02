@@ -1,0 +1,133 @@
+---
+title: "trustFall() — combined jailbreak and location spoof check"
+description: "Returns true if isJailBroken() or canMockLocation() is true — a single boolean answer to: can this device be trusted for sensitive operations?"
+---
+
+`trustFall()` is a convenience method that combines JailMonkey's two primary security checks into a single call. It returns `true` when the device is jailbroken **or** capable of GPS spoofing, making it the most practical entry point for apps that need a quick, no-configuration trust signal. If you only want to call one JailMonkey method, `trustFall()` is it.
+
+## Signature
+
+```typescript
+trustFall(): boolean
+```
+
+## Platform behavior
+
+<Tabs>
+  <Tab title="iOS">
+    Internally equivalent to:
+
+    ```objc
+    return [self isJailBroken] || [self canMockLocation];
+    ```
+
+    Both checks run in sequence. Because `canMockLocation()` on iOS 14 and earlier falls back to `isJailBroken()` itself, the effective logic on older iOS is:
+
+    - iOS 15+: jailbreak heuristics **or** `CLLocation.sourceInformation` spoof flag
+    - iOS 14 and earlier: jailbreak heuristics only (evaluated once)
+
+    Returns `false` on the iOS Simulator for `isJailBroken()` but `true` for `canMockLocation()`, so `trustFall()` returns **`true` on all simulators**.
+  </Tab>
+  <Tab title="Android">
+    The Android implementation is a direct boolean OR in `JailMonkeyModuleImpl`:
+
+    ```java
+    public static boolean trustFall() {
+        return isJailBroken() || canMockLocation();
+    }
+    ```
+
+    - `isJailBroken()` runs the full RootBeer + JailMonkey native root scan
+    - `canMockLocation()` scans for apps holding `ACCESS_MOCK_LOCATION`
+
+    Short-circuits on the first `true` result: if the device is already detected as rooted, the mock-location scan is skipped.
+
+    Returns `false` when the Android `Context` is `null`.
+  </Tab>
+</Tabs>
+
+## Return value
+
+<ResponseField name="result" type="boolean" required>
+  `true` if `isJailBroken()` or `canMockLocation()` returns `true`. `false` only when both checks pass clean. Always `true` on the iOS Simulator (because `canMockLocation()` is always `true` there).
+</ResponseField>
+
+## Usage example
+
+### Simple gate
+
+```typescript
+import JailMonkey from 'jail-monkey';
+
+function launchSensitiveFeature() {
+  if (JailMonkey.trustFall()) {
+    // Device cannot be trusted — block or warn the user.
+    Alert.alert(
+      'Security Warning',
+      'This feature is not available on jailbroken or rooted devices.',
+    );
+    return;
+  }
+
+  openSensitiveScreen();
+}
+```
+
+### App-level check on mount
+
+```typescript
+import React, { useEffect } from 'react';
+import JailMonkey from 'jail-monkey';
+
+export default function App() {
+  useEffect(() => {
+    if (JailMonkey.trustFall()) {
+      // Log the event and redirect to a blocked screen.
+      analytics.track('security_violation', { reason: 'trustFall' });
+      navigation.replace('DeviceBlocked');
+    }
+  }, []);
+
+  return <MainNavigator />;
+}
+```
+
+### Separating the reason
+
+When you need to know *why* `trustFall()` returned `true`, call the individual methods directly:
+
+```typescript
+import JailMonkey from 'jail-monkey';
+
+const isRooted = JailMonkey.isJailBroken();
+const canSpoof = JailMonkey.canMockLocation();
+
+if (isRooted || canSpoof) {
+  const reasons = [
+    isRooted && 'jailbroken/rooted device',
+    canSpoof && 'mock location capability',
+  ]
+    .filter(Boolean)
+    .join(' and ');
+
+  reportSecurityEvent(reasons);
+}
+```
+
+## Important notes
+
+<Tip>
+  `trustFall()` is the recommended single-call check for most apps. Use `isJailBroken()` and `canMockLocation()` individually only when you need platform-specific responses or granular telemetry.
+</Tip>
+
+<Warning>
+  `trustFall()` always returns `true` on the iOS Simulator because `canMockLocation()` is hardcoded to `YES` there. Guard against this in your development workflow using `__DEV__` or a build flag, otherwise the blocked screen will appear every time you run in the simulator.
+</Warning>
+
+<Note>
+  `trustFall()` is synchronous. It performs the same filesystem I/O and package-scan work as its two constituent methods. Cache the result in component state or a module-level variable rather than calling it on every render.
+</Note>
+
+<Note>
+  If the package is not linked, calling `trustFall()` throws an explicit linking error rather than silently returning `false`. A silent `false` on an unlinked package would make a broken installation appear as a passing security check.
+</Note>

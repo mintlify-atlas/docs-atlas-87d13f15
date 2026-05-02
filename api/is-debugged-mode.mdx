@@ -1,0 +1,152 @@
+---
+title: "isDebuggedMode() — detect active debugger attachment"
+description: "Returns a Promise resolving to true when a debugger is attached to the process, helping detect reverse-engineering attempts and debug-build deployments."
+---
+
+`isDebuggedMode()` checks whether a debugger is currently attached to the running app process. Unlike the other JailMonkey methods, it is **asynchronous** and returns a `Promise<boolean>` — you must use `await` or `.then()` to read the result. On iOS the check is performed via the `sysctl` kernel interface; on Android it combines the runtime debugger-connected flag with the build-time `FLAG_DEBUGGABLE` manifest attribute.
+
+## Signature
+
+```typescript
+isDebuggedMode(): Promise<boolean>
+```
+
+## Platform behavior
+
+<Tabs>
+  <Tab title="iOS">
+    The iOS implementation uses the `sysctl` system call with `KERN_PROC_PID` to read the `kinfo_proc` structure for the current process. It checks the `P_TRACED` flag in `kp_proc.p_flag`:
+
+    ```objc
+    name[0] = CTL_KERN;
+    name[1] = KERN_PROC;
+    name[2] = KERN_PROC_PID;
+    name[3] = getpid();
+
+    sysctl(name, 4, &info, &info_size, NULL, 0);
+
+    if ((info.kp_proc.p_flag & P_TRACED) != 0) {
+        // debugger is attached
+    }
+    ```
+
+    `P_TRACED` is set by the kernel whenever a process is being traced with `ptrace`, which is how LLDB and Xcode attach to an app. If `sysctl` itself fails (returns `-1`), the method resolves to `false`.
+
+    The result is wrapped in a native Promise and resolved on the React Native bridge.
+  </Tab>
+  <Tab title="Android">
+    Android performs two independent checks and resolves `true` if either is positive:
+
+    ```java
+    if (Debug.isDebuggerConnected()) {
+        isDebuggedMode = true;
+    } else {
+        isDebuggedMode = (context.getApplicationContext().getApplicationInfo().flags
+                & ApplicationInfo.FLAG_DEBUGGABLE) != 0;
+    }
+    p.resolve(isDebuggedMode);
+    ```
+
+    | Check | Description |
+    |---|---|
+    | `Debug.isDebuggerConnected()` | Runtime check — `true` when an ADB or JDWP debugger is actively connected |
+    | `FLAG_DEBUGGABLE` | Build-time check — `true` when the APK was built with `android:debuggable="true"` in the manifest, which is set automatically in debug builds |
+
+    <Note>
+      `FLAG_DEBUGGABLE` is `true` in all React Native debug builds, even when no debugger is actually connected. This means `isDebuggedMode()` will resolve to `true` whenever you run the app with `react-native run-android` (non-release). Use the release build variant to test production behaviour.
+    </Note>
+  </Tab>
+</Tabs>
+
+## Return value
+
+<ResponseField name="result" type="Promise<boolean>" required>
+  A Promise that resolves to `true` if a debugger is attached (iOS) or if the app is debuggable or has a debugger connected (Android). Resolves to `false` on a non-debuggable release build with no active debugger. Never rejects under normal conditions — errors are swallowed and the Promise resolves to `false`.
+</ResponseField>
+
+## Usage examples
+
+### async/await
+
+```typescript
+import JailMonkey from 'jail-monkey';
+
+async function checkDebugState() {
+  const isDebugged = await JailMonkey.isDebuggedMode();
+
+  if (isDebugged) {
+    console.warn('Debugger detected — restricting sensitive output.');
+  }
+}
+```
+
+### Promise chain
+
+```typescript
+import JailMonkey from 'jail-monkey';
+
+JailMonkey.isDebuggedMode()
+  .then((isDebugged) => {
+    if (isDebugged) {
+      reportSecurityEvent('debugger_attached');
+    }
+  })
+  .catch(console.warn);
+```
+
+### useEffect + useState pattern
+
+This is the idiomatic React Native pattern, taken directly from the JailMonkey example project:
+
+```typescript
+import React, { useEffect, useState } from 'react';
+import { Text, View } from 'react-native';
+import JailMonkey from 'jail-monkey';
+
+export default function SecurityStatus() {
+  const [isDebuggedMode, setIsDebuggedMode] = useState<boolean | undefined>();
+
+  useEffect(() => {
+    JailMonkey.isDebuggedMode()
+      .then(setIsDebuggedMode)
+      .catch(console.warn);
+  }, []);
+
+  return (
+    <View>
+      <Text>
+        Debugged: {isDebuggedMode === undefined ? 'checking…' : String(isDebuggedMode)}
+      </Text>
+    </View>
+  );
+}
+```
+
+The `undefined` initial state lets you distinguish "not yet resolved" from `false`, so you can show a loading indicator rather than prematurely displaying a clean result.
+
+## Important notes
+
+<Warning>
+  `isDebuggedMode()` returns a Promise. Calling it without `await` or `.then()` will give you a `Promise` object, not a `boolean`. This is a common mistake when converting from the other synchronous JailMonkey methods.
+
+  ```typescript
+  // Incorrect — always truthy (non-null Promise object)
+  if (JailMonkey.isDebuggedMode()) { ... }
+
+  // Correct
+  const debugged = await JailMonkey.isDebuggedMode();
+  if (debugged) { ... }
+  ```
+</Warning>
+
+<Warning>
+  On Android, `FLAG_DEBUGGABLE` is set in every debug build variant. `isDebuggedMode()` will resolve `true` during all development sessions, not just when a debugger is actively attached. Test your production security logic using a **release** build (`react-native run-android --mode release`).
+</Warning>
+
+<Note>
+  Call `isDebuggedMode()` inside a `useEffect` (or equivalent lifecycle method) rather than during render. The asynchronous resolution means the value is never available synchronously on the first render.
+</Note>
+
+<Tip>
+  Pair `isDebuggedMode()` with `trustFall()` for a comprehensive device trust check: `trustFall()` covers jailbreak and GPS spoofing synchronously, while `isDebuggedMode()` adds the debugger-attachment signal asynchronously once it resolves.
+</Tip>

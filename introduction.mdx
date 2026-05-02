@@ -1,0 +1,67 @@
+---
+title: "JailMonkey overview: API methods and platform support"
+description: "JailMonkey provides 10 detection methods covering jailbreak, root, mock locations, hooking frameworks, ADB, and debug mode across iOS and Android."
+---
+
+JailMonkey is a React Native library that detects whether a device has been jailbroken (iOS) or rooted (Android), and whether GPS location is being spoofed. With a straightforward API and support for both the Old Architecture (Bridge) and New Architecture (TurboModules), you can make informed decisions about what features to enable — or restrict — based on device trustworthiness.
+
+## Key features
+
+<CardGroup cols={2}>
+  <Card title="Jailbreak and root detection" icon="shield-xmark">
+    Identifies jailbroken iOS devices and rooted Android devices using filesystem checks, URL scheme probing, sandbox violations, and native RootBeer detection methods.
+  </Card>
+  <Card title="Mock location detection" icon="location-crosshairs">
+    Detects GPS spoofing apps and developer-mode mock location providers on both iOS and Android — critical for location-sensitive apps.
+  </Card>
+  <Card title="Hook detection" icon="bug">
+    Checks for suspicious hooking frameworks installed on Android that could intercept app logic or bypass security controls.
+  </Card>
+  <Card title="Debug and ADB detection" icon="terminal">
+    Detects whether the app is running in debug mode (`isDebuggedMode`) or whether Android Debug Bridge is enabled (`AdbEnabled`) on the device.
+  </Card>
+  <Card title="TurboModule support" icon="bolt">
+    Version 3.0.0 adds New Architecture (TurboModule) support with full backward compatibility. The library automatically prefers the TurboModule when available and falls back to the legacy bridge.
+  </Card>
+  <Card title="Granular Android detection" icon="magnifying-glass">
+    The `androidRootedDetectionMethods` API exposes individual RootBeer checks — useful for tuning false-positive behavior on specific device models.
+  </Card>
+</CardGroup>
+
+## API overview
+
+The table below lists every method, its return type, and which platforms it supports.
+
+| Method | Returns | Platform | Description |
+|---|---|---|---|
+| `isJailBroken()` | `boolean` | iOS, Android | Whether the device is jailbroken or rooted. |
+| `canMockLocation()` | `boolean` | iOS, Android | Whether the device can fake its GPS location. |
+| `trustFall()` | `boolean` | iOS, Android | `true` if either `isJailBroken` or `canMockLocation` returns `true`. |
+| `isDebuggedMode()` | `Promise<boolean>` | iOS, Android | Whether the app is running in debug mode. Returns a Promise. |
+| `jailBrokenMessage()` | `string` | iOS only | Human-readable reason for jailbreak detection. Returns `""` on Android. |
+| `hookDetected()` | `boolean` | Android only | Whether a suspicious hooking framework is installed. Returns `false` on iOS. |
+| `isOnExternalStorage()` | `boolean` | Android only | Whether the app is installed on external storage such as an SD card. Returns `false` on iOS. |
+| `AdbEnabled()` | `boolean` | Android only | Whether Android Debug Bridge is currently enabled. Returns `false` on iOS. |
+| `isDevelopmentSettingsMode()` | `Promise<boolean>` | Android only | Whether the user has enabled developer options on their device. Returns `Promise<false>` on iOS. |
+| `androidRootedDetectionMethods()` | `RootedDetectionMethods` | Android only | Object containing granular results for each individual Android root detection check. Returns `undefined` on iOS. |
+
+<Note>
+  Emulators are typically rooted by default, which means JailMonkey checks will return `true` during development. You will likely want to bypass these checks in non-production environments to avoid false positives.
+</Note>
+
+## Architecture support
+
+JailMonkey v3.0.0 introduces support for React Native's New Architecture via TurboModules. The library detects which architecture is active at runtime: it loads the TurboModule when available and transparently falls back to the legacy `NativeModules` bridge. No configuration change is required on your side.
+
+If you are not yet on the New Architecture, v2.8.5 is the latest stable release for the Old Architecture (Bridge).
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Installation" icon="download" href="/installation">
+    Add JailMonkey to your React Native project, including iOS CocoaPods setup and Android notes.
+  </Card>
+  <Card title="Quickstart" icon="bolt" href="/quickstart">
+    Build a working detection component in minutes with a full code example.
+  </Card>
+</CardGroup>

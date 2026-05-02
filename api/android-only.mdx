@@ -1,0 +1,369 @@
+---
+title: "Android-only APIs: hookDetected, AdbEnabled, and more"
+description: "Reference for hookDetected, isOnExternalStorage, AdbEnabled, isDevelopmentSettingsMode, and androidRootedDetectionMethods — Android-exclusive JailMonkey APIs."
+---
+
+JailMonkey exposes five Android-exclusive methods that cover attack surfaces specific to the Android platform: hooking framework detection, external storage installation, ADB access, developer options, and granular rooting checks via RootBeer. On iOS all of these methods return `false` or `Promise<false>` — no platform guards are required in your calling code.
+
+<Warning>
+  Calling any Android-only method on iOS always returns `false` synchronously, or `Promise.resolve(false)` for the async methods. You will not get an error, but the results are meaningless on iOS.
+</Warning>
+
+---
+
+## `hookDetected()`
+
+Detects whether a known hooking framework or suspicious privilege-escalation application is installed on the device.
+
+### TypeScript signature
+
+```typescript
+hookDetected(): boolean
+```
+
+### Returns
+
+<ResponseField name="return value" type="boolean">
+  `true` if a suspicious package is found or if stack trace analysis indicates an active hooking framework. `false` otherwise.
+</ResponseField>
+
+### Detection strategy
+
+The check runs in three stages:
+
+1. **Package scan** — Compares the list of installed applications against a blocklist of known packages including Xposed Installer (`de.robv.android.xposed.installer`), Substrate (`com.saurik.substrate`), Lucky Patcher (`com.dimonvideo.luckypatcher`), Magisk (`com.topjohnwu.magisk`), SuperSU, and others.
+
+2. **Stack trace analysis** — Throws and catches an exception to inspect the call stack. Returns `true` if `com.android.internal.os.ZygoteInit` appears twice (indicating Xposed), or if `com.saurik.substrate.MS$2#invoked` or `de.robv.android.xposed.XposedBridge#main` / `#handleHookedMethod` are present.
+
+3. **Frida process scan** — Queries `ActivityManager.getRunningServices()` for any process whose name contains `fridaserver` or `frida-server`.
+
+### Usage
+
+```typescript
+import JailMonkey from 'jail-monkey';
+
+if (JailMonkey.hookDetected()) {
+  // A hooking framework is active — treat as compromised.
+}
+```
+
+---
+
+## `isOnExternalStorage()`
+
+Detects whether the application is installed on external storage (an SD card or similar removable medium) rather than the device's internal storage.
+
+### TypeScript signature
+
+```typescript
+isOnExternalStorage(): boolean
+```
+
+### Returns
+
+<ResponseField name="return value" type="boolean">
+  `true` if the `ApplicationInfo.FLAG_EXTERNAL_STORAGE` flag is set, or if the app's files directory path contains `/mnt/` or `/sdcard/`. `false` if the app is on internal storage.
+</ResponseField>
+
+### Why this matters
+
+Apps running from external storage can be trivially replaced or tampered with because SD cards are readable by other devices when removed. Security-sensitive applications should refuse to run in this configuration.
+
+### Usage
+
+```typescript
+import JailMonkey from 'jail-monkey';
+
+if (JailMonkey.isOnExternalStorage()) {
+  // App is installed on an SD card — refuse to proceed.
+}
+```
+
+---
+
+## `AdbEnabled()`
+
+Detects whether Android Debug Bridge (ADB) is currently enabled in the device's system settings.
+
+### TypeScript signature
+
+```typescript
+AdbEnabled(): boolean
+```
+
+<Note>
+  Note the capital `A` — the method name matches the exported API exactly as defined in `jailmonkey.d.ts`.
+</Note>
+
+### Returns
+
+<ResponseField name="return value" type="boolean">
+  `true` if `Settings.Global.ADB_ENABLED` is `1`. `false` otherwise.
+</ResponseField>
+
+### Detection detail
+
+The implementation reads `Settings.Global.ADB_ENABLED`. ADB enabled on a non-development device is a strong indicator that the user has debugging access or is running a rooted ROM.
+
+<Note>
+  ADB being enabled is common on developer devices and does not by itself indicate malicious intent. Consider combining this check with `isJailBroken()` or `isDevelopmentSettingsMode()` before taking action.
+</Note>
+
+### Usage
+
+```typescript
+import JailMonkey from 'jail-monkey';
+
+if (JailMonkey.AdbEnabled()) {
+  // ADB is active — log a warning or restrict access.
+}
+```
+
+---
+
+## `isDevelopmentSettingsMode()`
+
+Checks whether the user has enabled Developer Options in Android system settings. This is an asynchronous method that returns a `Promise`.
+
+### TypeScript signature
+
+```typescript
+isDevelopmentSettingsMode(): Promise<boolean>
+```
+
+<Note>
+  This method is async. It returns a `Promise<boolean>`, not a plain boolean. You must `await` it or chain `.then()`.
+</Note>
+
+### Returns
+
+<ResponseField name="return value" type="Promise<boolean>">
+  Resolves to `true` if `Settings.Global.DEVELOPMENT_SETTINGS_ENABLED` is `1` (API 17+), or if the equivalent `Settings.Secure` value is `1` on older devices. Resolves to `false` otherwise.
+</ResponseField>
+
+### Why this differs from `AdbEnabled()`
+
+Developer Options is a broader setting. Enabling it unlocks USB debugging, mock locations, pointer location overlays, and other tools useful for tampering. A device can have Developer Options enabled while ADB is still off.
+
+### Usage with `async/await`
+
+```typescript
+import JailMonkey from 'jail-monkey';
+
+async function checkDevSettings() {
+  const devMode = await JailMonkey.isDevelopmentSettingsMode();
+  if (devMode) {
+    // Developer options are active.
+  }
+}
+```
+
+### Usage in a React component with `useEffect` and `useState`
+
+```typescript
+import React, { useEffect, useState } from 'react';
+import { View, Text } from 'react-native';
+import JailMonkey from 'jail-monkey';
+
+export default function SecurityCheck() {
+  const [devMode, setDevMode] = useState<boolean>(false);
+
+  useEffect(() => {
+    JailMonkey.isDevelopmentSettingsMode().then(setDevMode);
+  }, []);
+
+  return (
+    <View>
+      <Text>Developer options: {devMode ? 'ON' : 'OFF'}</Text>
+    </View>
+  );
+}
+```
+
+---
+
+## `androidRootedDetectionMethods()`
+
+Returns a granular breakdown of every individual rooting check that JailMonkey ran, split by detection engine. Use this when `isJailBroken()` returns `true` but you suspect false positives on specific device models.
+
+### TypeScript signature
+
+```typescript
+androidRootedDetectionMethods?: () => RootedDetectionMethods
+```
+
+<Note>
+  This property is marked optional (`?`) in the type definitions because it is only populated on Android. On iOS the property is `undefined`.
+</Note>
+
+### Return type
+
+```typescript
+type RootedDetectionMethods = {
+  rootBeer: {
+    detectRootManagementApps: boolean;
+    detectPotentiallyDangerousApps: boolean;
+    checkForSuBinary: boolean;
+    checkForDangerousProps: boolean;
+    checkForRWPaths: boolean;
+    detectTestKeys: boolean;
+    checkSuExists: boolean;
+    checkForRootNative: boolean;
+    checkForMagiskBinary: boolean;
+  };
+  jailMonkey: boolean;
+};
+```
+
+### Response fields
+
+<ResponseField name="jailMonkey" type="boolean">
+  Result of JailMonkey's own native rooting check, which varies by Android API level. On API 23+ it uses one strategy; on older versions it uses a different approach. This is the same flag used internally by `isJailBroken()` before combining with the RootBeer results.
+</ResponseField>
+
+<ResponseField name="rootBeer" type="object">
+  Results from the [RootBeer](https://github.com/scottyab/rootbeer) library. Each field corresponds to a single detection heuristic.
+
+  <Expandable title="rootBeer properties">
+    <ResponseField name="detectRootManagementApps" type="boolean">
+      Scans installed packages for known root management apps (SuperSU, Magisk Manager, KingUser, etc.).
+    </ResponseField>
+
+    <ResponseField name="detectPotentiallyDangerousApps" type="boolean">
+      Scans installed packages for apps that are commonly used alongside root access (Lucky Patcher, ROM Manager, root cloak utilities, etc.).
+    </ResponseField>
+
+    <ResponseField name="checkForSuBinary" type="boolean">
+      Searches common binary paths (`/system/bin/su`, `/system/xbin/su`, `/sbin/su`, etc.) for the `su` binary.
+    </ResponseField>
+
+    <ResponseField name="checkForDangerousProps" type="boolean">
+      Reads system properties. Returns `true` if `ro.debuggable` is `1`, `ro.secure` is `0`, or other dangerous prop values are set.
+    </ResponseField>
+
+    <ResponseField name="checkForRWPaths" type="boolean">
+      Parses `/proc/mounts` and returns `true` if any path that should be read-only (e.g., `/system`, `/vendor`) is mounted read-write.
+    </ResponseField>
+
+    <ResponseField name="detectTestKeys" type="boolean">
+      Checks `android.os.Build.TAGS` for the value `test-keys`, which indicates the ROM was signed with Android test keys rather than the manufacturer's release keys.
+    </ResponseField>
+
+    <ResponseField name="checkSuExists" type="boolean">
+      Calls `which su` and `find`-based path probing to check for the presence of `su` executable.
+    </ResponseField>
+
+    <ResponseField name="checkForRootNative" type="boolean">
+      Runs a native (JNI) check for root indicators. This can detect root that managed-code checks miss.
+    </ResponseField>
+
+    <ResponseField name="checkForMagiskBinary" type="boolean">
+      Searches common binary paths for the `magisk` binary specifically, because Magisk's systemless root leaves no traces that path-based `su` checks catch.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+### Usage
+
+#### Basic call
+
+```typescript
+import JailMonkey from 'jail-monkey';
+
+const methods = JailMonkey.androidRootedDetectionMethods?.();
+if (methods) {
+  console.log('JailMonkey native check:', methods.jailMonkey);
+  console.log('RootBeer checks:', methods.rootBeer);
+}
+```
+
+#### Handling false positives on specific devices
+
+Some checks (notably `detectTestKeys` and `checkForRWPaths`) produce false positives on certain OEM ROMs — typically manufacturer-customised devices that use test keys or mount `/system` as read-write by design. Use the granular results to apply a custom policy:
+
+```typescript
+import JailMonkey from 'jail-monkey';
+
+function isTrustedDevice(): boolean {
+  // Fast path: clean device.
+  if (!JailMonkey.isJailBroken()) return true;
+
+  const methods = JailMonkey.androidRootedDetectionMethods?.();
+  if (!methods) return false;
+
+  const { rootBeer, jailMonkey } = methods;
+
+  // Ignore test-key and RW-path signals on known OEM builds.
+  const ignoredChecks = ['detectTestKeys', 'checkForRWPaths'] as const;
+  const significantHits = (
+    Object.keys(rootBeer) as Array<keyof typeof rootBeer>
+  ).filter(
+    (key) => !ignoredChecks.includes(key as any) && rootBeer[key] === true
+  );
+
+  // Trust the device if only the ignored checks fired.
+  return jailMonkey === false && significantHits.length === 0;
+}
+```
+
+#### Async usage with `useState` (combining all Android-only checks)
+
+```typescript
+import React, { useEffect, useState } from 'react';
+import { Platform, View, Text } from 'react-native';
+import JailMonkey from 'jail-monkey';
+
+interface SecurityState {
+  isRooted: boolean;
+  hookDetected: boolean;
+  adbEnabled: boolean;
+  devMode: boolean;
+  onExternalStorage: boolean;
+}
+
+export default function AndroidSecurityAudit() {
+  const [security, setSecurity] = useState<SecurityState | null>(null);
+
+  useEffect(() => {
+    if (Platform.OS !== 'android') return;
+
+    JailMonkey.isDevelopmentSettingsMode().then((devMode) => {
+      setSecurity({
+        isRooted: JailMonkey.isJailBroken(),
+        hookDetected: JailMonkey.hookDetected(),
+        adbEnabled: JailMonkey.AdbEnabled(),
+        devMode,
+        onExternalStorage: JailMonkey.isOnExternalStorage(),
+      });
+    });
+  }, []);
+
+  if (!security) return null;
+
+  return (
+    <View>
+      <Text>Rooted: {String(security.isRooted)}</Text>
+      <Text>Hook detected: {String(security.hookDetected)}</Text>
+      <Text>ADB enabled: {String(security.adbEnabled)}</Text>
+      <Text>Developer options: {String(security.devMode)}</Text>
+      <Text>External storage: {String(security.onExternalStorage)}</Text>
+    </View>
+  );
+}
+```
+
+---
+
+## Platform behaviour summary
+
+| Method | Android | iOS |
+|---|---|---|
+| `hookDetected()` | Active check | `false` |
+| `isOnExternalStorage()` | Active check | `false` |
+| `AdbEnabled()` | Active check | `false` |
+| `isDevelopmentSettingsMode()` | Active check (`Promise<boolean>`) | `Promise<false>` |
+| `androidRootedDetectionMethods()` | Returns `RootedDetectionMethods` | `undefined` |
+
+<Note>
+  Since emulators are effectively rooted, `isJailBroken()` and the rooted detection methods will return `true` on Android emulators. Consider bypassing security checks during development using a flag such as `__DEV__`.
+</Note>

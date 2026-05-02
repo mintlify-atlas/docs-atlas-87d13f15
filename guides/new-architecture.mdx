@@ -1,0 +1,162 @@
+---
+title: "React Native New Architecture support in JailMonkey"
+description: "How JailMonkey v3.0.0 supports TurboModules with backward compatibility, the fallback logic in index.tsx, and what the LINKING_ERROR Proxy prevents."
+---
+
+JailMonkey v3.0.0 added full support for the React Native New Architecture (TurboModules / JSI) while preserving backward compatibility with the legacy bridge. You can upgrade from v2.x without changing any call sites — the public API is identical.
+
+## Version compatibility
+
+| Version | Architecture |
+|---|---|
+| `2.8.5` | Old Architecture (Bridge) only |
+| `3.0.0+` | New Architecture (TurboModules) with bridge fallback |
+
+Install the latest version:
+
+```bash
+npm install jail-monkey@latest
+```
+
+For iOS, run CocoaPods after installing:
+
+```bash
+cd ios && pod install
+```
+
+## The TurboModule spec
+
+The New Architecture requires a typed JavaScript spec that codegen uses to generate the native interface. JailMonkey's spec lives in `specs/NativeJailMonkey.ts`:
+
+```typescript
+import type { TurboModule } from 'react-native';
+import { TurboModuleRegistry } from 'react-native';
+
+export interface Spec extends TurboModule {
+  jailBrokenMessage(): string;
+  isJailBroken(): boolean;
+  hookDetected(): boolean;
+  canMockLocation(): boolean;
+  trustFall(): boolean;
+  isOnExternalStorage(): boolean;
+  AdbEnabled(): boolean;
+  isDebuggedMode(): Promise<boolean>;
+  isDevelopmentSettingsMode(): Promise<boolean>;
+  rootedDetectionMethods?: () => { [key: string]: boolean };
+}
+
+export default TurboModuleRegistry.getEnforcing<Spec>('JailMonkey');
+```
+
+All methods are typed as functions, which is how the New Architecture requires them to be declared. This contrasts with the legacy bridge, where some values were returned as constants via `getConstants()` / `constantsToExport` rather than as callable methods.
+
+## Fallback logic in `index.tsx`
+
+The entry point tries to resolve the TurboModule first, then falls back to the legacy `NativeModules.JailMonkey`:
+
+```typescript
+// Prefer TurboModule when available.
+let turboModule: any = null;
+try {
+  turboModule = require('./specs/NativeJailMonkey.ts').default;
+} catch {
+  turboModule = null;
+}
+
+const legacy = NativeModules.JailMonkey;
+const source: any = turboModule ?? legacy;
+```
+
+The `try/catch` around the TurboModule require is intentional. On Old Architecture setups the spec file may not resolve, and wrapping the require means the library degrades gracefully to `NativeModules` instead of crashing at import time.
+
+### Normalizing constants vs. functions
+
+The legacy bridge can return values from `constantsToExport` as plain booleans on the JS side rather than callable functions. The entry point wraps these so every method is callable regardless of which architecture is active:
+
+```typescript
+const wrapBool = (v: any) =>
+  typeof v === 'function' ? v : () => Boolean(v);
+
+// Applied to every boolean method:
+isJailBroken: wrapBool(source.isJailBroken),
+canMockLocation: wrapBool(source.canMockLocation),
+// ...
+```
+
+This means you always call `JailMonkey.isJailBroken()` — never `JailMonkey.isJailBroken` — and it works correctly on both architectures.
+
+## The `LINKING_ERROR` Proxy
+
+If neither the TurboModule nor the legacy `NativeModules.JailMonkey` resolves (that is, the package is not linked at all), the entry point returns a `Proxy` object instead of a module with methods that silently return `false`:
+
+```typescript
+const exported: any =
+  source == null
+    ? new Proxy(
+        {},
+        {
+          get() {
+            return () => {
+              throw new Error(LINKING_ERROR);
+            };
+          },
+        },
+      )
+    : { /* real methods */ };
+```
+
+The error message is:
+
+```
+The package 'jail-monkey' doesn't seem to be linked. Make sure:
+
+- You have run 'pod install'        (iOS only)
+- You rebuilt the app after installing the package
+- You are not using Expo Go
+```
+
+<Note>
+  Expo Go is explicitly called out in the linking error because Expo Go bundles a fixed set of native modules and does not support custom native packages. JailMonkey requires native code on both iOS and Android and cannot run inside Expo Go. Use a [development build](https://docs.expo.dev/develop/development-builds/introduction/) (`expo-dev-client`) or a bare React Native project instead.
+</Note>
+
+This design is a deliberate security decision. A missing install that silently returned `false` would make every device appear clean — exactly the wrong behavior for a security library. The Proxy ensures that an unlinked package is immediately visible as an error rather than a quiet false negative.
+
+## iOS native integration
+
+On iOS, the Objective-C implementation conditionally compiles TurboModule support based on the `RCT_NEW_ARCH_ENABLED` flag:
+
+```objc
+#ifdef RCT_NEW_ARCH_ENABLED
+- (std::shared_ptr<facebook::react::TurboModule>)getTurboModule:
+    (const facebook::react::ObjCTurboModule::InitParams &)params
+{
+    return std::make_shared<facebook::react::NativeJailMonkeySpecJSI>(params);
+}
+#endif
+```
+
+When building with the New Architecture enabled, `getTurboModule:` is compiled in and the module registers itself via JSI. When building for Old Architecture, the method is compiled out and the module registers via the standard `RCT_EXPORT_MODULE()` path.
+
+## Migration path
+
+<Steps>
+  <Step title="Update the package">
+    ```bash
+    npm install jail-monkey@latest
+    ```
+  </Step>
+  <Step title="Rebuild the app">
+    The native modules must be rebuilt after the version change. For iOS, re-run `pod install` and then build. For Android, clean and rebuild.
+
+    ```bash
+    # iOS
+    cd ios && pod install && cd ..
+
+    # Android
+    cd android && ./gradlew clean && cd ..
+    ```
+  </Step>
+  <Step title="Verify call sites">
+    No API changes are required. All methods retain their existing signatures. Confirm your existing calls work by running the app and checking that `isJailBroken()`, `canMockLocation()`, and any other methods you use return values rather than throwing.
+  </Step>
+</Steps>

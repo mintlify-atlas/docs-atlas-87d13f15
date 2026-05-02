@@ -1,0 +1,152 @@
+---
+title: "Detecting jailbroken and rooted devices in React Native"
+description: "Learn how isJailBroken() works on iOS and Android, including the exact paths, dylibs, and RootBeer checks that trigger a positive detection."
+---
+
+JailMonkey's `isJailBroken()` is a synchronous method that returns `true` if the device shows signs of being jailbroken on iOS or rooted on Android. The underlying checks differ significantly between platforms, so understanding what each one looks for helps you tune your response and investigate false positives.
+
+## Basic usage
+
+```typescript
+import JailMonkey from 'jail-monkey';
+
+if (JailMonkey.isJailBroken()) {
+  // Device is jailbroken or rooted — restrict access or warn the user
+}
+```
+
+## Platform behavior
+
+<Tabs>
+  <Tab title="iOS">
+    On iOS, `isJailBroken()` runs six independent checks and returns `true` if any one of them triggers. On a Simulator it always returns `false`, and on a Mac Catalyst app it also returns `false`.
+
+    <AccordionGroup>
+      <Accordion title="Filesystem paths">
+        JailMonkey checks for the presence of over 80 well-known jailbreak artifacts. A few representative examples:
+
+        - `/.bootstrapped_electra`, `/.installed_unc0ver`, `/.cydia_no_stash`
+        - `/Applications/Cydia.app`, `/Applications/Sileo.app`
+        - `/Library/MobileSubstrate/MobileSubstrate.dylib`
+        - `/bin/bash`, `/etc/apt`, `/usr/sbin/frida-server`
+        - `/var/mobile/Library/Preferences/com.opa334.Dopamine-roothide.plist`
+
+        The full list is defined in `-[JailMonkey pathsToCheck]` inside `JailMonkey.mm`.
+      </Accordion>
+      <Accordion title="URL schemes">
+        The check calls `canOpenURL:` for schemes registered by jailbreak tools. Any resolvable scheme triggers detection:
+
+        - `cydia://`, `sileo://`, `zbra://`, `activator://`, `filza://`, `undecimus://`
+
+        Note that the URL scheme list also includes GPS spoofing apps — see [Detecting mock location](/guides/detecting-mock-location) for details on how those factor in.
+      </Accordion>
+      <Accordion title="Symlinks">
+        Standard system paths that are symlinked to non-standard destinations are a jailbreak indicator. Checked paths include `/Applications`, `/Library/Ringtones`, `/Library/Wallpaper`, `/usr/include`, `/usr/libexec`, and `/usr/share`.
+      </Accordion>
+      <Accordion title="Loaded dylibs">
+        JailMonkey iterates all images loaded via `_dyld_image_count()` / `_dyld_get_image_name()` and looks for known jailbreak dylib names, including `CydiaSubstrate`, `FridaGadget`, `MobileSubstrate.dylib`, `SSLKillSwitch2.dylib`, `Substitute`, `systemhook.dylib` (Dopamine), and others.
+      </Accordion>
+      <Accordion title="Sandbox violation">
+        Attempts to write the string `"This is an anti-spoofing test."` to `/private/jailbreak.txt`. On a stock device the sandbox prevents this. Success means the sandbox has been weakened.
+      </Accordion>
+      <Accordion title="Fork ability">
+        Calls `fork()`. Stock iOS apps cannot spawn child processes; a non-negative PID means the kernel restrictions have been loosened, which is a strong indicator of a jailbreak.
+      </Accordion>
+    </AccordionGroup>
+  </Tab>
+  <Tab title="Android">
+    On Android, `isJailBroken()` delegates to `RootedCheck`, which combines a native JailMonkey check with the [RootBeer](https://github.com/scottyab/rootbeer) library. Detection is positive if either returns `true`.
+
+    The JailMonkey-native check selects a strategy based on API level:
+
+    - **API ≥ 23** — `GreaterThan23.checkRooted()`
+    - **API < 23** — `LessThan23.checkRooted()`
+
+    RootBeer runs nine independent sub-checks:
+
+    | Check | What it looks for |
+    |---|---|
+    | `detectRootManagementApps` | Root management apps (SuperSU, Magisk, etc.) |
+    | `detectPotentiallyDangerousApps` | Known patching or hiding tools |
+    | `checkForSuBinary` | `su` binary in common locations |
+    | `checkForDangerousProps` | Build properties indicating a rooted build |
+    | `checkForRWPaths` | System paths mounted read-write |
+    | `detectTestKeys` | Build signed with test keys instead of release keys |
+    | `checkSuExists` | `su` via `PATH` traversal |
+    | `checkForRootNative` | Native binary checks |
+    | `checkForMagiskBinary` | Magisk binary presence |
+  </Tab>
+</Tabs>
+
+## Granular Android detection
+
+When `isJailBroken()` returns `true` on Android, use `androidRootedDetectionMethods()` to see exactly which check fired. This is the primary tool for diagnosing false positives.
+
+```typescript
+import JailMonkey from 'jail-monkey';
+import { Platform } from 'react-native';
+
+if (Platform.OS === 'android') {
+  const methods = JailMonkey.androidRootedDetectionMethods();
+
+  if (methods) {
+    console.log('RootBeer results:', methods.rootBeer);
+    // {
+    //   detectRootManagementApps: false,
+    //   detectPotentiallyDangerousApps: false,
+    //   checkForSuBinary: true,      // <-- triggered
+    //   checkForDangerousProps: false,
+    //   checkForRWPaths: false,
+    //   detectTestKeys: true,        // <-- triggered
+    //   checkSuExists: false,
+    //   checkForRootNative: false,
+    //   checkForMagiskBinary: false,
+    // }
+    console.log('JailMonkey native result:', methods.jailMonkey);
+  }
+}
+```
+
+### `RootedDetectionMethods` type
+
+```typescript
+type RootedDetectionMethods = {
+  rootBeer: {
+    detectRootManagementApps: boolean;
+    detectPotentiallyDangerousApps: boolean;
+    checkForSuBinary: boolean;
+    checkForDangerousProps: boolean;
+    checkForRWPaths: boolean;
+    detectTestKeys: boolean;
+    checkSuExists: boolean;
+    checkForRootNative: boolean;
+    checkForMagiskBinary: boolean;
+  };
+  jailMonkey: boolean;
+};
+```
+
+<Note>
+  `androidRootedDetectionMethods()` is Android-only. On iOS it returns `undefined`. Always guard calls with a `Platform.OS === 'android'` check. If a device model consistently triggers `detectTestKeys` but not any other check, it may be shipping with non-release build keys — a common source of false positives on budget devices.
+</Note>
+
+## iOS jailbreak reason string
+
+On iOS you can retrieve a comma-separated string explaining which checks fired:
+
+```typescript
+import JailMonkey from 'jail-monkey';
+import { Platform } from 'react-native';
+
+if (Platform.OS === 'ios' && JailMonkey.isJailBroken()) {
+  const reason = JailMonkey.jailBrokenMessage();
+  // e.g. ",#checkPaths,[/Applications/Cydia.app],#checkDylibs,[...]"
+  console.log('Jailbreak reason:', reason);
+}
+```
+
+`jailBrokenMessage()` returns an empty string on Android.
+
+<Warning>
+  Android emulators are almost always detected as rooted because they use test-signed builds, expose `su`, and mount system partitions read-write by design. Running `isJailBroken()` on an emulator will reliably return `true`. See [Bypassing checks in development](/guides/emulator-bypass) for how to handle this.
+</Warning>

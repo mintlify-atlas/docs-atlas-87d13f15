@@ -1,0 +1,160 @@
+---
+title: "iOS-only API: jailBrokenMessage() jailbreak reason string"
+description: "Reference for jailBrokenMessage(), the iOS-exclusive method that returns a detailed reason string explaining which jailbreak checks triggered."
+---
+
+`jailBrokenMessage()` is an iOS-exclusive method that returns a human-readable, comma-separated string describing exactly which checks caused a device to be flagged as jailbroken. On Android — and on clean, non-jailbroken iOS devices — it always returns an empty string. Use it alongside `isJailBroken()` when you need to audit or log the specific signals that triggered detection.
+
+---
+
+## `jailBrokenMessage()`
+
+Returns a diagnostic string that identifies which jailbreak checks fired. Each triggered check is prefixed with `#` and, where applicable, followed by the specific path, scheme, symlink, or dylib that matched in square brackets.
+
+### TypeScript signature
+
+```typescript
+jailBrokenMessage(): string
+```
+
+### Returns
+
+<ResponseField name="return value" type="string">
+  A comma-separated string of triggered check identifiers. Returns `""` (empty string) when the device is not jailbroken, when running on a simulator, when running on a Mac Catalyst app (`isiOSAppOnMac`), or on any Android device.
+</ResponseField>
+
+### Return value format
+
+The string is built up sequentially. Each triggered check appends one or two segments:
+
+| Segment | Meaning |
+|---|---|
+| `#checkPaths,[path]` | A known jailbreak-related file path was found on disk |
+| `#checkSchemes,[scheme]` | A known jailbreak-related URL scheme can be opened |
+| `#canViolateSandbox` | The process successfully wrote outside its sandbox to `/private/jailbreak.txt` |
+| `#canFork` | `fork()` succeeded — impossible on a non-jailbroken device |
+| `#checkSymlinks,[symlink]` | One or more expected symlinks resolved to a destination (all matching symlinks are included) |
+| `#checkDylibs,[dylib]` | A suspicious dynamic library is loaded in the process image list |
+
+<Note>
+  For `#checkPaths`, `#checkSchemes`, and `#checkDylibs`, only the first match is reported. For `#checkSymlinks`, every matching symlink path is appended.
+</Note>
+
+### Example output
+
+The string always starts with a leading comma because segments are appended with `,[segment]`:
+
+```
+,#checkPaths,[/Applications/Cydia.app],#checkSchemes,[,cydia://package/com.example.package],#canViolateSandbox,#checkDylibs,[/usr/lib/CydiaSubstrate,CydiaSubstrate]
+```
+
+A device that triggers only the dylib check:
+
+```
+,#checkDylibs,[/usr/lib/libsubstitute.dylib,Substitute]
+```
+
+An empty string means no checks fired:
+
+```
+
+```
+
+---
+
+## Checks performed
+
+`jailBrokenMessage()` runs the same checks as `isJailBroken()` and reports each one that returns `true`. The underlying iOS implementation (`JailMonkey.mm`) runs the following in order:
+
+<AccordionGroup>
+  <Accordion title="checkPaths — filesystem path scanning">
+    Iterates over 80+ known jailbreak-related paths (Cydia, Sileo, unc0ver, checkra1n, Electra, Dopamine, SSH binaries, substrate libraries, etc.) using `NSFileManager fileExistsAtPath:`. Returns on the first match.
+
+    Example paths checked: `/Applications/Cydia.app`, `/bin/bash`, `/usr/lib/libhooker.dylib`, `/var/mobile/Library/Preferences/com.opa334.Dopamine-roothide.plist`.
+  </Accordion>
+
+  <Accordion title="checkSchemes — URL scheme probing">
+    Calls `canOpenURL:` on a set of known jailbreak and location-spoofer URL schemes: `cydia://`, `sileo://`, `zbra://`, `filza://`, `activator://`, `undecimus://`, `anygofree://`, `xgpspro://`, `acc.GpsManager://`, `LocationSimulation://`, `locationfakelocation://`.
+  </Accordion>
+
+  <Accordion title="canViolateSandbox — sandbox write test">
+    Attempts to write a test file to `/private/jailbreak.txt`. On a stock device the sandbox prevents this; on a jailbroken device the write succeeds.
+  </Accordion>
+
+  <Accordion title="canFork — fork() system call">
+    Calls `fork()`. On a standard iOS device the kernel blocks `fork()` for third-party apps. A successful return value (`pid >= 0`) indicates the restriction has been lifted by a jailbreak.
+  </Accordion>
+
+  <Accordion title="checkSymlinks — symlink resolution">
+    Calls `destinationOfSymbolicLinkAtPath:` on paths like `/Applications`, `/Library/Ringtones`, `/usr/share`, and `/var/lib/undecimus/apt`. On a jailbroken device these often point outside the expected sandbox.
+  </Accordion>
+
+  <Accordion title="checkDylibs — loaded dynamic library scan">
+    Iterates the process's loaded images via `_dyld_get_image_name()` and checks each name for known jailbreak-related strings: `CydiaSubstrate`, `FridaGadget`, `Substitute`, `Shadow`, `libhooker`, `SSLKillSwitch2`, `systemhook.dylib`, and others.
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Usage
+
+### Pairing with `isJailBroken()`
+
+`jailBrokenMessage()` re-runs every check internally, so there is no performance benefit to calling it unconditionally. Call it only after `isJailBroken()` returns `true`:
+
+```typescript
+import JailMonkey from 'jail-monkey';
+
+function handleJailbreakCheck() {
+  if (JailMonkey.isJailBroken()) {
+    const reason = JailMonkey.jailBrokenMessage();
+    // Log the reason for analytics / debugging, then restrict access.
+    console.warn('Jailbreak detected:', reason);
+    return false;
+  }
+  return true;
+}
+```
+
+### Logging specific triggers for analytics
+
+```typescript
+import JailMonkey from 'jail-monkey';
+
+function reportJailbreakSignals(logger: (msg: string) => void) {
+  const message = JailMonkey.jailBrokenMessage();
+
+  if (!message) {
+    // Empty string — device is clean or this is Android.
+    return;
+  }
+
+  // Parse individual check segments (each starts with #).
+  const checks = message.split(',#').filter(Boolean);
+  checks.forEach((check) => logger(`[JailMonkey] triggered: #${check}`));
+}
+```
+
+### Trimming the leading comma
+
+The raw string always begins with a leading comma. Strip it before display:
+
+```typescript
+const raw = JailMonkey.jailBrokenMessage();
+const trimmed = raw.startsWith(',') ? raw.slice(1) : raw;
+```
+
+---
+
+## Platform behaviour
+
+<Note>
+  All iOS-only methods return `false` or `""` on Android. You do not need to guard calls with platform checks — the module handles this transparently. `jailBrokenMessage()` specifically returns the string `"null"` from the Android native layer, which the JS wrapper normalises to `""`.
+</Note>
+
+| Platform | Return value when jailbroken | Return value when clean |
+|---|---|---|
+| iOS (device) | Non-empty comma-separated string | `""` |
+| iOS (simulator) | `""` | `""` |
+| iOS (Mac Catalyst) | `""` | `""` |
+| Android | `""` | `""` |

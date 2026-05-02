@@ -1,0 +1,108 @@
+---
+title: "Installing JailMonkey in your React Native project"
+description: "Step-by-step guide to adding JailMonkey to iOS and Android React Native apps, including CocoaPods, autolinking, and New Architecture setup."
+---
+
+JailMonkey is a native module that requires linking on both iOS and Android. Follow the steps below to get it installed and ready to use. If you are on React Native 0.60 or later, autolinking handles most of the setup for you.
+
+<Steps>
+  <Step title="Install the package">
+    Add JailMonkey to your project using your preferred package manager.
+
+    <CodeGroup>
+
+    ```bash npm
+    npm install jail-monkey --save
+    ```
+
+    ```bash yarn
+    yarn add jail-monkey
+    ```
+
+    ```bash pnpm
+    pnpm add jail-monkey
+    ```
+
+    </CodeGroup>
+
+    <Info>
+      **New Architecture (TurboModules):** Install `jail-monkey@latest` (v3.0.0+) to get New Architecture support.  
+      **Old Architecture (Bridge):** If you have not yet migrated, install v2.8.5: `npm install jail-monkey@2.8.5 --save`
+    </Info>
+  </Step>
+
+  <Step title="Link the native module (React Native &lt; 0.60 only)">
+    React Native 0.60 and later handle linking automatically via autolinking. If you are on an older version, run:
+
+    ```bash
+    react-native link jail-monkey
+    ```
+
+    <Warning>
+      If you use `rnpm` to link, be aware that `rnpm` does not link Android properly for versions after 0.29.0. Use `react-native link` instead, or rely on autolinking if your React Native version supports it.
+    </Warning>
+  </Step>
+
+  <Step title="Install iOS CocoaPods">
+    JailMonkey includes native iOS code that must be installed via CocoaPods. From your project root, run:
+
+    ```bash
+    cd ios && pod install
+    ```
+
+    The podspec declares a dependency on `React-Core` and, when the New Architecture is enabled (`RCT_NEW_ARCH_ENABLED=1`), also pulls in `React-RCTFabric`, `React-Codegen`, and `ReactCommon/turbomodule/core`.
+
+    <Info>
+      If you are using Expo, make sure you have run `expo prebuild` to generate the native `ios/` directory before running `pod install`. JailMonkey is not compatible with Expo Go.
+    </Info>
+  </Step>
+
+  <Step title="Rebuild your app">
+    After linking and pod install, you must rebuild the native app. A hot-reload or fast-refresh is not sufficient — the native binary needs to be recompiled.
+
+    ```bash
+    # iOS
+    npx react-native run-ios
+
+    # Android
+    npx react-native run-android
+    ```
+  </Step>
+
+  <Step title="Android: complement with location provider check">
+    On Android, JailMonkey's `canMockLocation()` check works at the system level. For thorough location spoofing detection, you should also check `location.isFromMockProvider()` from your location provider alongside JailMonkey.
+
+    ```typescript
+    import JailMonkey from 'jail-monkey';
+
+    // JailMonkey detects whether mock locations are enabled system-wide
+    const mockEnabled = JailMonkey.canMockLocation();
+
+    // Your location library's per-fix mock check (varies by library)
+    // e.g. react-native-geolocation-service exposes coords.mocked
+    ```
+
+    <Note>
+      Most React Native location libraries — such as `react-native-geolocation-service` — already expose a `mocked` flag per location fix. Check your library's documentation to see if this is available.
+    </Note>
+  </Step>
+</Steps>
+
+## Verify the installation
+
+After rebuilding, import JailMonkey and call a synchronous method to confirm the native module is linked correctly:
+
+```typescript
+import JailMonkey from 'jail-monkey';
+
+console.log('isJailBroken:', JailMonkey.isJailBroken());
+```
+
+If the native module is not linked, JailMonkey will throw an explicit error instead of silently returning `false`. This prevents a missing install from being mistaken for a clean, non-jailbroken device.
+
+## Version reference
+
+| Version | Architecture | Notes |
+|---|---|---|
+| v3.0.0+ | New Architecture (TurboModules) + Old Architecture | Recommended. Install with `jail-monkey@latest`. |
+| v2.8.5 | Old Architecture (Bridge) only | Latest stable for projects not yet on the New Architecture. |

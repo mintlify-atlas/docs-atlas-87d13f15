@@ -1,0 +1,122 @@
+---
+title: "Bypassing JailMonkey checks in development environments"
+description: "Learn how to skip JailMonkey's jailbreak and mock location checks on emulators and simulators without letting that bypass reach production builds."
+---
+
+Android emulators and iOS Simulators intentionally have properties that trigger JailMonkey's detection checks. Emulators run on test-signed builds, expose a `su` binary, mount system partitions read-write, and have no hardware GPS — all of which JailMonkey correctly identifies as suspicious. Running `isJailBroken()` or `canMockLocation()` unguarded during development means your app will behave as if it is always on a compromised device.
+
+## Why emulators trigger detection
+
+<AccordionGroup>
+  <Accordion title="Android emulator false positives">
+    Android emulators are built from AOSP with test keys rather than release keys (`detectTestKeys` triggers), have `su` available for ADB shell commands (`checkForSuBinary`, `checkSuExists` trigger), and mount `/system` read-write (`checkForRWPaths` triggers). The `androidRootedDetectionMethods()` result on a fresh emulator will show multiple checks positive simultaneously.
+  </Accordion>
+  <Accordion title="iOS Simulator false positives">
+    The iOS Simulator has no GPS hardware, so `canMockLocation()` always returns `true` by design — it is hardcoded in the Objective-C implementation. `isJailBroken()` returns `false` on the Simulator because the code explicitly checks `TARGET_OS_SIMULATOR` and short-circuits, so jailbreak checks are not a concern there.
+  </Accordion>
+</AccordionGroup>
+
+## Guarding with `__DEV__`
+
+React Native exposes a global `__DEV__` flag that is `true` in development builds (Metro bundler) and `false` in production release builds. This is the simplest bypass:
+
+```typescript
+import JailMonkey from 'jail-monkey';
+
+function isDeviceCompromised(): boolean {
+  if (__DEV__) {
+    // Skip all checks during development
+    return false;
+  }
+  return JailMonkey.isJailBroken();
+}
+```
+
+<Warning>
+  A `__DEV__` guard is stripped at build time in release bundles — the check will never run in a production app compiled with `--mode release`. However, you must verify your build process is correct. A misconfigured pipeline that ships a debug build to production would disable all security checks silently.
+</Warning>
+
+## Platform-aware guard
+
+If you want more granular control — for example, allowing mock location in development on Android but not iOS — combine `__DEV__` with `Platform.OS`:
+
+```typescript
+import JailMonkey from 'jail-monkey';
+import { Platform } from 'react-native';
+
+function checkDeviceIntegrity() {
+  if (__DEV__) {
+    console.log('[DEV] JailMonkey checks skipped on development build');
+    return { jailBroken: false, mockLocation: false };
+  }
+
+  return {
+    jailBroken: JailMonkey.isJailBroken(),
+    mockLocation: JailMonkey.canMockLocation(),
+  };
+}
+```
+
+## `Platform.select` pattern
+
+Use `Platform.select` when you want different bypass behavior per platform in a single expression:
+
+```typescript
+import JailMonkey from 'jail-monkey';
+import { Platform } from 'react-native';
+
+const shouldSkipChecks: boolean = Platform.select({
+  android: __DEV__,   // skip on Android dev builds (emulators always rooted)
+  ios: false,         // never skip on iOS (Simulator returns false for isJailBroken)
+  default: __DEV__,
+}) ?? __DEV__;
+
+const isJailBroken = shouldSkipChecks ? false : JailMonkey.isJailBroken();
+const canMockLocation = shouldSkipChecks ? false : JailMonkey.canMockLocation();
+```
+
+## Environment variable pattern
+
+For more explicit control across environments (development, staging, production), use an environment variable set at build time via a tool like `react-native-config` or Expo's `app.config.js`:
+
+```typescript
+import JailMonkey from 'jail-monkey';
+import Config from 'react-native-config';
+
+function getSecurityStatus() {
+  if (Config.SKIP_SECURITY_CHECKS === 'true') {
+    return { safe: true };
+  }
+
+  return {
+    safe: !JailMonkey.trustFall(),
+  };
+}
+```
+
+<Note>
+  When using environment variables, ensure `SKIP_SECURITY_CHECKS` is never set to `true` in your production environment configuration. Treat it the same way you would treat a feature flag for a dangerous capability — audit it in every release.
+</Note>
+
+## Testing on a real device
+
+Bypassing JailMonkey in development is fine for iteration speed, but you should always run a final verification pass on a real physical device before shipping:
+
+<Steps>
+  <Step title="Build a release APK or IPA">
+    Build with `--mode release` (Android) or the Release scheme (iOS) so that `__DEV__` is `false` and all guards are inactive.
+  </Step>
+  <Step title="Install on a non-rooted physical device">
+    Sideload the build onto a device that has never been jailbroken or rooted to confirm that `isJailBroken()` returns `false` on clean hardware.
+  </Step>
+  <Step title="Verify detection on a rooted device">
+    If you have access to a rooted test device, confirm that `isJailBroken()` returns `true` and your app responds correctly.
+  </Step>
+  <Step title="Test mock location">
+    Enable a mock location app in Android Developer Options and verify that `canMockLocation()` returns `true` and your app handles it.
+  </Step>
+</Steps>
+
+<Warning>
+  Never ship a build to the App Store or Google Play with a bypass that is not gated behind `__DEV__` or a build-time flag. A bypass that reaches production means your app silently treats every device as trusted regardless of its actual state.
+</Warning>

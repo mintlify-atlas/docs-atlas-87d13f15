@@ -1,0 +1,118 @@
+---
+title: "Detecting fake GPS and mock location spoofing in apps"
+description: "Understand how canMockLocation() identifies GPS spoofing on iOS and Android, including CLLocation source info and mock provider permission scanning."
+---
+
+GPS spoofing lets users fake their location to cheat in location-based apps, bypass geo-restrictions, or test location flows in ways that can compromise data integrity. JailMonkey's `canMockLocation()` provides a synchronous, cross-platform signal to detect when mock locations are likely active.
+
+## Basic usage
+
+```typescript
+import JailMonkey from 'jail-monkey';
+
+if (JailMonkey.canMockLocation()) {
+  // Location data may be spoofed — restrict or warn
+}
+```
+
+## Platform behavior
+
+<Tabs>
+  <Tab title="iOS">
+    On iOS, `canMockLocation()` uses a layered strategy:
+
+    **iOS Simulator:** Always returns `true`. The Simulator has no real GPS hardware and always runs location simulation.
+
+    **iOS 15+ — `CLLocationSourceInformation`:** When the device runs iOS 15 or later and a location fix is available, JailMonkey checks `CLLocation.sourceInformation`. Detection triggers if either of these properties is set:
+
+    - `isSimulatedBySoftware` — location was injected by a software GPS spoofer
+    - `isProducedByAccessory` — location originated from an external accessory rather than the device's GPS chip
+
+    ```objc
+    // From JailMonkey.mm
+    if (@available(iOS 15.0, *)) {
+        CLLocationManager *locationManager = [[CLLocationManager alloc] init];
+        CLLocation *location = locationManager.location;
+
+        if (location.sourceInformation != nil) {
+            if (location.sourceInformation.isSimulatedBySoftware ||
+                location.sourceInformation.isProducedByAccessory) {
+                return YES;
+            }
+        }
+    }
+    ```
+
+    **Fallback — `isJailBroken()`:** If `CLLocationSourceInformation` is unavailable (iOS < 15, or no location fix yet), the method falls back to `isJailBroken()`. A jailbroken device is assumed to be capable of location spoofing even without direct evidence.
+
+    **URL scheme detection:** The URL scheme list checked by `isJailBroken()` includes several known GPS spoofing apps. If any of these schemes can be opened, the device is flagged:
+
+    | App | URL scheme |
+    |---|---|
+    | AnyGo Location Spoofer | `anygofree://` |
+    | Fake GPS Pro | `xgpspro://` |
+    | GPS Manager | `acc.GpsManager://` |
+    | LocSim | `LocationSimulation://` |
+    | LocSim (alternate) | `locationfakelocation://` |
+
+    <Note>
+      On the iOS Simulator, `canMockLocation()` always returns `true` regardless of any other conditions. This is expected behavior — the Simulator does not have real GPS hardware. Use a physical device for final testing.
+    </Note>
+  </Tab>
+  <Tab title="Android">
+    On Android, `canMockLocation()` calls `MockLocationCheck.isMockLocationOn()`, which uses two strategies depending on the API level.
+
+    **API < 23 (pre-Marshmallow):** Reads `Settings.Secure.ALLOW_MOCK_LOCATION`. Returns `true` when the value is `"0"` (mock locations allowed).
+
+    **API ≥ 23 (Marshmallow and above):** Iterates all installed packages and looks for any app that has been **granted** `android.permission.ACCESS_MOCK_LOCATION`. This is the permission required for apps to inject fake locations through the system's mock location provider.
+
+    The following packages are excluded from the scan to prevent false positives:
+
+    - Your own app (`context.getPackageName()`)
+    - `com.android.calendar`
+    - `com.google.android.calendar`
+
+    Detection returns `true` only when the permission is both declared and granted — a declared-but-not-granted permission is not sufficient.
+  </Tab>
+</Tabs>
+
+## Complementing with native location provider checks
+
+On Android, `canMockLocation()` detects whether any installed app *can* inject a mock location. It does not tell you whether a specific location fix *was* mocked. For tighter guarantees, complement it with `Location.isFromMockProvider()` from your location library:
+
+```typescript
+import JailMonkey from 'jail-monkey';
+
+// Check whether mock location capability is enabled at all
+const mockCapabilityEnabled = JailMonkey.canMockLocation();
+
+// Your location library (e.g. react-native-geolocation-service) may
+// expose isFromMockProvider on the position object:
+navigator.geolocation.getCurrentPosition((position) => {
+  const isMocked = (position as any).mocked; // library-dependent field
+  if (mockCapabilityEnabled || isMocked) {
+    // Treat location as untrusted
+  }
+});
+```
+
+<Info>
+  Most React Native location libraries (react-native-geolocation-service, expo-location, etc.) expose `isFromMockProvider()` data via a `mocked` flag on the position object. Check your library's documentation for the exact field name.
+</Info>
+
+## Combined check with `trustFall()`
+
+`trustFall()` is a convenience method that returns `true` if either `isJailBroken()` or `canMockLocation()` is `true`. Use it when you want a single signal covering both threat vectors:
+
+```typescript
+import JailMonkey from 'jail-monkey';
+
+if (JailMonkey.trustFall()) {
+  // Device is either jailbroken/rooted OR capable of location spoofing
+  console.warn('Device integrity check failed');
+}
+```
+
+<Warning>
+  `trustFall()` is a broad gate. On iOS, because `canMockLocation()` falls back to `isJailBroken()` when no location fix is available, `trustFall()` may be equivalent to running `isJailBroken()` twice. If you need finer control, call `isJailBroken()` and `canMockLocation()` separately and respond differently to each condition.
+</Warning>

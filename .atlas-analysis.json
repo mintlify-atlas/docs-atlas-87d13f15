@@ -1,0 +1,78 @@
+{
+  "projectType": "sdk-library",
+  "projectName": "JailMonkey",
+  "projectDescription": "A React Native library for detecting jailbroken/rooted devices and mocked GPS locations on iOS and Android.",
+  "theme": "luma",
+  "primaryColor": "#848c8e",
+  "lightColor": "#11161e",
+  "darkColor": "#cfd0d2",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "installation",
+              "quickstart"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/detecting-jailbreak",
+              "guides/detecting-mock-location",
+              "guides/emulator-bypass",
+              "guides/new-architecture"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Cross-Platform API",
+            "pages": [
+              "api/is-jail-broken",
+              "api/can-mock-location",
+              "api/trust-fall",
+              "api/is-debugged-mode"
+            ]
+          },
+          {
+            "group": "Platform-Specific API",
+            "pages": [
+              "api/ios-only",
+              "api/android-only"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Detects jailbroken (iOS) and rooted (Android) devices",
+    "Identifies mock/fake GPS location spoofing",
+    "Granular Android rooted detection via RootBeer integration",
+    "Hook detection for suspicious installed applications",
+    "Checks for external storage (SD card) on Android",
+    "ADB enabled detection on Android",
+    "Debug mode detection (async) on both platforms",
+    "React Native New Architecture (TurboModules) support"
+  ],
+  "publicApiSurface": [
+    "JailMonkey.isJailBroken()",
+    "JailMonkey.canMockLocation()",
+    "JailMonkey.trustFall()",
+    "JailMonkey.isDebuggedMode()",
+    "JailMonkey.jailBrokenMessage()",
+    "JailMonkey.hookDetected()",
+    "JailMonkey.isOnExternalStorage()",
+    "JailMonkey.AdbEnabled()",
+    "JailMonkey.isDevelopmentSettingsMode()",
+    "JailMonkey.androidRootedDetectionMethods()"
+  ]
+}
